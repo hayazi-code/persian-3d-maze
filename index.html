@@ -1,22 +1,35 @@
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>هزارتوی شعر</title>
   <style>
-    body {
-      margin: 0;
-      overflow: hidden;
-      background: black;
-    }
-    canvas {
-      display: block;
+    body { margin: 0; overflow: hidden; background: black; }
+    canvas { display: block; }
+    /* tiny debug label so we know HTML loaded */
+    #dbg {
+      position: fixed; left: 10px; top: 10px;
+      color: #ddd; font: 12px system-ui; opacity: 0.8;
+      background: rgba(0,0,0,0.35); padding: 6px 8px; border-radius: 8px;
+      z-index: 10;
     }
   </style>
+
+  <!-- Import map so Three.js loads as an ES module reliably -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
 </head>
 <body>
-
-<script type="module" src="main.js"></script>
-
+  <div id="dbg">loading…</div>
+  <script type="module">
+    document.getElementById('dbg').textContent = 'HTML loaded. Loading JS…';
+    import './main.js';
+  </script>
 </body>
 </html>
