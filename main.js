@@ -1,65 +1,58 @@
 import * as THREE from "three";
 
-// --------------------
-// Scene Setup
-// --------------------
+// ---------- On-screen HUD + error trapping ----------
+const hud = document.getElementById("hud");
+
+function setHUD(msg) {
+  if (hud) hud.textContent = msg;
+}
+
+window.addEventListener("error", (e) => {
+  setHUD("❌ خطا:\n" + (e?.message || e) + "\n\n(برای جزئیات، کنسول مرورگر را ببینید.)");
+});
+window.addEventListener("unhandledrejection", (e) => {
+  setHUD("❌ خطا (Promise):\n" + (e?.reason?.message || e?.reason || e) + "\n\n(برای جزئیات، کنسول مرورگر را ببینید.)");
+});
+
+setHUD("✅ main.js اجرا شد. در حال ساخت صحنه…");
+
+// ---------- Scene ----------
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
-scene.fog = new THREE.Fog(0x000000, 5, 40);
+scene.fog = new THREE.Fog(0x000000, 4, 35);
 
-// --------------------
-// Camera
-// --------------------
-const camera = new THREE.PerspectiveCamera(
-  75,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  1000
-);
-
+// ---------- Camera ----------
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 200);
 camera.position.set(1.5, 1.6, 1.5);
 
-// --------------------
-// Renderer
-// --------------------
+// ---------- Renderer ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 document.body.appendChild(renderer.domElement);
 
-// Debug label
-const dbg = document.getElementById("dbg");
-if (dbg) dbg.textContent = "JS running. Use arrow keys.";
+// ---------- Lighting ----------
+const ambient = new THREE.AmbientLight(0xffffff, 0.35);
+scene.add(ambient);
 
-// --------------------
-// Lighting
-// --------------------
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
-scene.add(ambientLight);
-
-const torch1 = new THREE.PointLight(0xffaa55, 2.2, 18);
-torch1.position.set(1.5, 2.6, 1.5);
+// Torch near player
+const torch1 = new THREE.PointLight(0xffaa55, 2.4, 18);
+torch1.position.set(1.5, 2.7, 1.5);
 scene.add(torch1);
 
-const torch2 = new THREE.PointLight(0xffaa55, 1.6, 14);
-torch2.position.set(5, 2.6, 5);
+// Second torch
+const torch2 = new THREE.PointLight(0xffaa55, 1.7, 14);
+torch2.position.set(5, 2.7, 5);
 scene.add(torch2);
 
-// --------------------
-// Floor
-// --------------------
-const floorGeometry = new THREE.PlaneGeometry(50, 50, 10, 10);
-const floorMaterial = new THREE.MeshStandardMaterial({
-  color: 0x1a1a1a,
-  roughness: 0.9,
-});
-const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+// ---------- Floor ----------
+const floorGeo = new THREE.PlaneGeometry(60, 60);
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95 });
+const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 
-// --------------------
-// Maze Layout
-// 1 = wall, 0 = empty
-// --------------------
+// ---------- Maze ----------
 const maze = [
   [1,1,1,1,1,1,1,1],
   [1,0,0,0,1,0,0,1],
@@ -71,102 +64,81 @@ const maze = [
   [1,1,1,1,1,1,1,1],
 ];
 
-const wallGeometry = new THREE.BoxGeometry(1, 3, 1);
-const wallMaterial = new THREE.MeshStandardMaterial({
-  color: 0x333333,
-  roughness: 0.8,
-});
+const wallGeo = new THREE.BoxGeometry(1, 3, 1);
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x2f2f2f, roughness: 0.85 });
 
 const walls = [];
-
 for (let z = 0; z < maze.length; z++) {
   for (let x = 0; x < maze[z].length; x++) {
     if (maze[z][x] === 1) {
-      const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-      wall.position.set(x, 1.5, z);
-      scene.add(wall);
-      walls.push(wall);
+      const w = new THREE.Mesh(wallGeo, wallMat);
+      w.position.set(x, 1.5, z);
+      scene.add(w);
+      walls.push(w);
     }
   }
 }
 
-// --------------------
-// Movement Controls
-// --------------------
+// ---------- Controls (Arrow keys) ----------
+const keys = Object.create(null);
+document.addEventListener("keydown", (e) => { keys[e.key] = true; });
+document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+
 const speed = 0.08;
-const turnSpeed = 0.03;
-const keys = {};
+const turnSpeed = 0.035;
 
-document.addEventListener("keydown", (e) => {
-  keys[e.key] = true;
-});
-
-document.addEventListener("keyup", (e) => {
-  keys[e.key] = false;
-});
-
-// Collision detection
-function checkCollision(newPos) {
+function collides(pos) {
+  // Simple player box
   const playerBox = new THREE.Box3().setFromCenterAndSize(
-    newPos,
-    new THREE.Vector3(0.4, 1.6, 0.4)
+    pos,
+    new THREE.Vector3(0.45, 1.6, 0.45)
   );
 
-  for (let wall of walls) {
+  for (const wall of walls) {
     const wallBox = new THREE.Box3().setFromObject(wall);
-    if (playerBox.intersectsBox(wallBox)) {
-      return true;
-    }
+    if (playerBox.intersectsBox(wallBox)) return true;
   }
   return false;
 }
 
-// Update movement
 function updateMovement() {
-  const direction = new THREE.Vector3();
-  camera.getWorldDirection(direction);
-  direction.y = 0;
-  direction.normalize();
+  // Turning
+  if (keys["ArrowLeft"])  camera.rotation.y += turnSpeed;
+  if (keys["ArrowRight"]) camera.rotation.y -= turnSpeed;
 
-  let moveVector = new THREE.Vector3();
+  // Forward/back
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  dir.normalize();
 
-  if (keys["ArrowUp"]) {
-    moveVector.add(direction.clone().multiplyScalar(speed));
-  }
+  let move = new THREE.Vector3();
+  if (keys["ArrowUp"])   move.add(dir.clone().multiplyScalar(speed));
+  if (keys["ArrowDown"]) move.add(dir.clone().multiplyScalar(-speed));
 
-  if (keys["ArrowDown"]) {
-    moveVector.add(direction.clone().multiplyScalar(-speed));
-  }
+  const next = camera.position.clone().add(move);
+  if (!collides(next)) camera.position.copy(next);
 
-  if (keys["ArrowLeft"]) {
-    camera.rotation.y += turnSpeed;
-  }
-
-  if (keys["ArrowRight"]) {
-    camera.rotation.y -= turnSpeed;
-  }
-
-  const newPosition = camera.position.clone().add(moveVector);
-
-  if (!checkCollision(newPosition)) {
-    camera.position.copy(newPosition);
-  }
+  // Keep torch near player so you always see something
+  torch1.position.set(camera.position.x, 2.7, camera.position.z);
 }
 
-// --------------------
-// Resize Handling
-// --------------------
+// ---------- Resize ----------
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// --------------------
-// Animation Loop
-// --------------------
+// ---------- Loop ----------
+setHUD("✅ اجرا شد. با کلیدهای جهت‌دار حرکت کن.");
+
 function animate() {
   requestAnimationFrame(animate);
+
+  // Tiny flicker for torch2 (subtle)
+  torch2.intensity = 1.55 + Math.sin(performance.now() * 0.008) * 0.15;
+
   updateMovement();
   renderer.render(scene, camera);
 }
