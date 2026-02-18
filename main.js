@@ -1,12 +1,12 @@
 import * as THREE from "three";
 
 /*
-Controls (Arrow Keys Only):
-↑  Move forward
-↓  Move backward
-←  Turn left
-→  Turn right
-Click once on the scene to give it focus.
+Arrow Keys Only:
+↑ forward
+↓ backward
+← turn left
+→ turn right
+Click scene once for focus.
 */
 
 // ---------- HUD ----------
@@ -16,9 +16,9 @@ function setHUD(msg) { if (hud) hud.textContent = msg; }
 // ---------- Scene ----------
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x050507);
-scene.fog = new THREE.Fog(0x050507, 7, 70);
+scene.fog = new THREE.Fog(0x050507, 10, 120);
 
-// ---------- Maze ----------
+// ---------- Maze (grid) ----------
 const maze = [
   [1,1,1,1,1,1,1,1],
   [1,0,0,0,1,0,0,1],
@@ -30,7 +30,13 @@ const maze = [
   [1,1,1,1,1,1,1,1],
 ];
 
-const PLAYER_RADIUS = 0.22;
+// ---------- World Scale (50% wider corridors) ----------
+const TILE = 1.5;          // <— This makes all halls 50% wider
+const WALL_W = TILE;
+const WALL_H = 3.2;
+const WALL_D = TILE;
+
+const PLAYER_RADIUS = 0.28; // tuned for TILE=1.5
 
 function isWallCell(cx, cz) {
   if (cz < 0 || cz >= maze.length) return true;
@@ -38,20 +44,24 @@ function isWallCell(cx, cz) {
   return maze[cz][cx] === 1;
 }
 
+function worldToCell(v) {
+  return Math.floor(v / TILE);
+}
+
 function findSafeSpawn() {
   for (let z = 1; z < maze.length - 1; z++) {
     for (let x = 1; x < maze[0].length - 1; x++) {
-      if (maze[z][x] === 0) return { x: x + 0.5, z: z + 0.5 };
+      if (maze[z][x] === 0) return { x: (x + 0.5) * TILE, z: (z + 0.5) * TILE };
     }
   }
-  return { x: 1.5, z: 1.5 };
+  return { x: 1.5 * TILE, z: 1.5 * TILE };
 }
 
 const spawn = findSafeSpawn();
 
 // ---------- Camera ----------
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 250);
-camera.position.set(spawn.x, 1.6, spawn.z);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 400);
+camera.position.set(spawn.x, 1.65, spawn.z);
 
 let yaw = Math.PI;
 camera.rotation.set(0, yaw, 0);
@@ -66,49 +76,184 @@ renderer.domElement.setAttribute("tabindex", "0");
 renderer.domElement.style.outline = "none";
 renderer.domElement.addEventListener("click", () => renderer.domElement.focus());
 
-// ---------- Lights ----------
-const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+// ---------- Lighting ----------
+const ambient = new THREE.AmbientLight(0xffffff, 0.18);
 scene.add(ambient);
 
-const hemi = new THREE.HemisphereLight(0x99aaff, 0x120a00, 0.25);
+const hemi = new THREE.HemisphereLight(0x8fa2ff, 0x120900, 0.18);
 scene.add(hemi);
 
-// Torch attached to player (so nothing is ever fully black)
-const playerTorch = new THREE.PointLight(0xffc07a, 1.4, 18);
+// small “carry” light so it’s never pitch black
+const playerTorch = new THREE.PointLight(0xffc07a, 0.9, 16);
 scene.add(playerTorch);
 
-// ---------- Floor ----------
-const floorGeo = new THREE.PlaneGeometry(80, 80);
-const floorMat = new THREE.MeshStandardMaterial({
-  color: 0x17171d,
-  roughness: 0.98,
-});
+// ---------- Procedural textures ----------
+function makeRugTexture(seed = 0) {
+  const c = document.createElement("canvas");
+  c.width = 1024;
+  c.height = 512;
+  const g = c.getContext("2d");
+
+  // base
+  g.fillStyle = "#2b0f12";
+  g.fillRect(0, 0, c.width, c.height);
+
+  // border
+  g.fillStyle = "#c9a24a";
+  g.fillRect(24, 24, c.width - 48, c.height - 48);
+  g.fillStyle = "#1a0b0c";
+  g.fillRect(44, 44, c.width - 88, c.height - 88);
+
+  // field
+  g.fillStyle = "#3a1216";
+  g.fillRect(70, 70, c.width - 140, c.height - 140);
+
+  // medallion
+  g.save();
+  g.translate(c.width / 2, c.height / 2);
+  g.rotate(0.02 * seed);
+  g.fillStyle = "rgba(205, 168, 88, 0.85)";
+  g.beginPath();
+  g.ellipse(0, 0, 180, 120, 0, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = "rgba(26, 11, 12, 0.85)";
+  g.beginPath();
+  g.ellipse(0, 0, 130, 85, 0, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+
+  // repeating motifs
+  g.globalAlpha = 0.35;
+  g.fillStyle = "#c9a24a";
+  for (let y = 110; y < c.height - 110; y += 62) {
+    for (let x = 120; x < c.width - 120; x += 80) {
+      const r = 10 + ((x + y + seed) % 9);
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+      g.fillRect(x - 2, y - 20, 4, 40);
+      g.fillRect(x - 20, y - 2, 40, 4);
+    }
+  }
+  g.globalAlpha = 1;
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 1);
+  tex.anisotropy = 8;
+  return tex;
+}
+
+function makeCeilingTexture() {
+  const c = document.createElement("canvas");
+  c.width = 1024;
+  c.height = 1024;
+  const g = c.getContext("2d");
+
+  g.fillStyle = "#0f1016";
+  g.fillRect(0, 0, c.width, c.height);
+
+  // star lattice
+  g.strokeStyle = "rgba(200, 180, 120, 0.30)";
+  g.lineWidth = 3;
+
+  const step = 128;
+  for (let y = 0; y <= c.height; y += step) {
+    for (let x = 0; x <= c.width; x += step) {
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + step, y + step);
+      g.stroke();
+
+      g.beginPath();
+      g.moveTo(x + step, y);
+      g.lineTo(x, y + step);
+      g.stroke();
+    }
+  }
+
+  // center rosette
+  g.save();
+  g.translate(c.width / 2, c.height / 2);
+  for (let i = 0; i < 18; i++) {
+    g.rotate(Math.PI / 9);
+    g.strokeStyle = `rgba(220, 195, 130, ${0.15 + i * 0.01})`;
+    g.beginPath();
+    g.arc(0, 0, 220 + i * 6, 0, Math.PI * 2);
+    g.stroke();
+  }
+  g.restore();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);
+  tex.anisotropy = 8;
+  return tex;
+}
+
+// ---------- Floor: dark stone + rugs ----------
+const floorGeo = new THREE.PlaneGeometry(200, 200);
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.98 });
 const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 
-// subtle grid so orientation stays easy (we’ll remove later if you want)
-const grid = new THREE.GridHelper(80, 80, 0x252535, 0x171728);
-grid.position.y = 0.01;
-scene.add(grid);
+// Rugs placed in corridors
+const rugs = [];
+function addRug(x, z, rot = 0, seed = 0) {
+  const rugTex = makeRugTexture(seed);
+  const rugMat = new THREE.MeshStandardMaterial({
+    map: rugTex,
+    roughness: 0.95,
+    metalness: 0.0
+  });
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(TILE * 2.0, TILE * 1.15), rugMat);
+  rug.rotation.x = -Math.PI / 2;
+  rug.rotation.z = rot;
+  rug.position.set(x, 0.02, z);
+  scene.add(rug);
+  rugs.push(rug);
+}
 
-// ---------- Walls ----------
-const wallGeo = new THREE.BoxGeometry(1, 3, 1);
-const wallMat = new THREE.MeshStandardMaterial({
-  color: 0x4f4f5c,
+// Drop a few rugs in open cells
+let rugSeed = 1;
+for (let z = 1; z < maze.length - 1; z++) {
+  for (let x = 1; x < maze[0].length - 1; x++) {
+    if (maze[z][x] === 0 && (x + z) % 3 === 0) {
+      addRug((x + 0.5) * TILE, (z + 0.5) * TILE, ((x + z) % 2) ? 0 : Math.PI / 2, rugSeed++);
+    }
+  }
+}
+
+// ---------- Ceiling ----------
+const ceilingTex = makeCeilingTexture();
+const ceilingMat = new THREE.MeshStandardMaterial({
+  map: ceilingTex,
+  color: 0xffffff,
   roughness: 0.85,
   metalness: 0.05
 });
+const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), ceilingMat);
+ceiling.rotation.x = Math.PI / 2;
+ceiling.position.y = WALL_H; // at top of walls
+scene.add(ceiling);
 
-const wallCenters = []; // keep for placing plaques/torches
+// ---------- Walls ----------
+const wallGeo = new THREE.BoxGeometry(WALL_W, WALL_H, WALL_D);
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0x4c4c5b,
+  roughness: 0.86,
+  metalness: 0.05
+});
 
 for (let z = 0; z < maze.length; z++) {
   for (let x = 0; x < maze[z].length; x++) {
     if (maze[z][x] === 1) {
       const w = new THREE.Mesh(wallGeo, wallMat);
-      w.position.set(x + 0.5, 1.5, z + 0.5);
+      w.position.set((x + 0.5) * TILE, WALL_H / 2, (z + 0.5) * TILE);
       scene.add(w);
-      wallCenters.push({ x: x + 0.5, z: z + 0.5 });
     }
   }
 }
@@ -127,9 +272,8 @@ crosshair.style.pointerEvents = "none";
 crosshair.style.zIndex = "20";
 document.body.appendChild(crosshair);
 
-// ---------- Arrow keys only ----------
+// ---------- Arrow input ----------
 const keys = {};
-
 document.addEventListener("keydown", (e) => {
   if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
@@ -139,7 +283,7 @@ document.addEventListener("keyup", (e) => {
   keys[e.key] = false;
 });
 
-// ---------- Collision (grid samples) ----------
+// ---------- Collision (grid-based) ----------
 function canStandAt(x, z) {
   const samples = [
     { dx:  PLAYER_RADIUS, dz:  0 },
@@ -150,203 +294,173 @@ function canStandAt(x, z) {
   for (const s of samples) {
     const px = x + s.dx;
     const pz = z + s.dz;
-    const cx = Math.floor(px);
-    const cz = Math.floor(pz);
+    const cx = worldToCell(px);
+    const cz = worldToCell(pz);
     if (isWallCell(cx, cz)) return false;
   }
   return true;
 }
 
-// ---------- Poetry plaque generator (canvas -> texture) ----------
-function makePoemTexture(lines, author) {
+// ---------- Nastaliq poem texture + framed plaque ----------
+function makePoemTextureNastaliq(lines, author) {
   const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 512;
+  canvas.width = 1400;
+  canvas.height = 800;
   const ctx = canvas.getContext("2d");
 
-  // background
-  ctx.fillStyle = "rgba(10, 8, 6, 0.88)";
+  // parchment background
+  ctx.fillStyle = "rgba(24, 18, 12, 0.92)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // border
-  ctx.strokeStyle = "rgba(255, 210, 160, 0.55)";
-  ctx.lineWidth = 6;
-  ctx.strokeRect(18, 18, canvas.width - 36, canvas.height - 36);
+  // inner glow
+  const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 80, canvas.width/2, canvas.height/2, 650);
+  grad.addColorStop(0, "rgba(255, 220, 170, 0.06)");
+  grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // subtle inner border
-  ctx.strokeStyle = "rgba(255, 210, 160, 0.22)";
-  ctx.lineWidth = 2;
+  // border line (actual frame will be 3D; this is just a thin inner edge)
+  ctx.strokeStyle = "rgba(255, 215, 170, 0.25)";
+  ctx.lineWidth = 6;
   ctx.strokeRect(40, 40, canvas.width - 80, canvas.height - 80);
 
-  // text settings (browser Persian fonts)
-  ctx.fillStyle = "rgba(255, 235, 210, 0.95)";
+  // Nastaliq-ish: use Noto Nastaliq Urdu if loaded
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  // Try a stack of Persian-capable fonts
-  const mainFont = '42px "Vazirmatn", "Vazir", "IRANSans", "Noto Naskh Arabic", "Noto Sans Arabic", "Tahoma", "Arial"';
-  ctx.font = mainFont;
+  // Big Nastaliq
+  ctx.fillStyle = "rgba(255, 238, 215, 0.97)";
+  ctx.font = '58px "Noto Nastaliq Urdu", "Noto Naskh Arabic", "Tahoma", "Arial"';
 
-  // Render poem lines
-  const centerX = canvas.width / 2;
-  const startY = 190;
-  const lineGap = 62;
+  const cx = canvas.width / 2;
+  const startY = 330;
+  const gap = 96;
 
-  // Ensure lines are strings; draw top-to-bottom
   for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], centerX, startY + i * lineGap);
+    ctx.fillText(lines[i], cx, startY + i * gap);
   }
 
-  // author
-  ctx.font = '30px "Vazirmatn", "Vazir", "IRANSans", "Noto Naskh Arabic", "Tahoma", "Arial"';
   ctx.fillStyle = "rgba(255, 210, 160, 0.85)";
-  ctx.fillText(`— ${author} —`, centerX, canvas.height - 90);
+  ctx.font = '36px "Noto Nastaliq Urdu", "Noto Naskh Arabic", "Tahoma", "Arial"';
+  ctx.fillText(`— ${author} —`, cx, canvas.height - 140);
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  texture.needsUpdate = true;
-  return texture;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
 }
 
-function addPlaqueWithTorch({ x, z, face }, poemLines, author) {
-  // face: "N" means plaque faces north (looking -z), "S" faces south, "E" faces east, "W" faces west
-  // We'll offset plaque slightly off the wall surface
-  const texture = makePoemTexture(poemLines, author);
+function addFramedPoem({ cellX, cellZ, face }, lines, author) {
+  // Convert cell center to world
+  const x = (cellX + 0.5) * TILE;
+  const z = (cellZ + 0.5) * TILE;
 
-  const plaqueGeo = new THREE.PlaneGeometry(0.95, 0.55);
-  const plaqueMat = new THREE.MeshStandardMaterial({
-    map: texture,
-    roughness: 0.85,
-    metalness: 0.05
-  });
+  // Plaque plane
+  const tex = makePoemTextureNastaliq(lines, author);
+  const plaqueW = 1.55; // in world units
+  const plaqueH = 0.92;
 
-  const plaque = new THREE.Mesh(plaqueGeo, plaqueMat);
+  const plaque = new THREE.Mesh(
+    new THREE.PlaneGeometry(plaqueW, plaqueH),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.05 })
+  );
 
-  // position plaque at eye-ish level
-  const y = 1.65;
-  const offset = 0.51; // wall half-size is 0.5, so 0.51 avoids z-fighting
+  // 3D frame (simple ornate-ish)
+  const frameOuter = new THREE.Mesh(
+    new THREE.BoxGeometry(plaqueW + 0.10, plaqueH + 0.10, 0.05),
+    new THREE.MeshStandardMaterial({ color: 0x7a5a2c, roughness: 0.55, metalness: 0.25 })
+  );
+  const frameInnerCut = new THREE.Mesh(
+    new THREE.BoxGeometry(plaqueW - 0.02, plaqueH - 0.02, 0.06),
+    new THREE.MeshStandardMaterial({ color: 0x000000 })
+  );
+  // (Cheap “cutout” illusion: we simply place the inner slightly behind; looks like depth)
+  frameInnerCut.position.z = -0.01;
 
-  let rx = 0, ry = 0, px = x, pz = z;
+  const group = new THREE.Group();
+  group.add(frameOuter);
+  group.add(frameInnerCut);
+  group.add(plaque);
 
-  if (face === "N") { pz -= offset; ry = 0; }
-  if (face === "S") { pz += offset; ry = Math.PI; }
-  if (face === "E") { px += offset; ry = -Math.PI / 2; }
-  if (face === "W") { px -= offset; ry =  Math.PI / 2; }
+  // Placement on wall
+  const y = 1.75;
+  const out = (TILE / 2) + 0.02; // just off wall surface
 
-  plaque.position.set(px, y, pz);
-  plaque.rotation.set(rx, ry, 0);
-  scene.add(plaque);
+  let px = x, pz = z, ry = 0;
 
-  // Torch sconce (simple geometry)
-  const sconce = new THREE.Group();
+  if (face === "N") { pz -= out; ry = 0; }
+  if (face === "S") { pz += out; ry = Math.PI; }
+  if (face === "E") { px += out; ry = -Math.PI / 2; }
+  if (face === "W") { px -= out; ry =  Math.PI / 2; }
 
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.03, 0.03, 0.35, 10),
+  group.position.set(px, y, pz);
+  group.rotation.y = ry;
+
+  // plaque itself slightly forward from frame
+  plaque.position.z = 0.028;
+
+  scene.add(group);
+
+  // Lamp (beautiful hanging lamp nearby)
+  const lamp = new THREE.Group();
+
+  const chain = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.01, 0.01, 0.65, 10),
     new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.9 })
   );
-  base.position.y = 1.6;
-  base.rotation.z = Math.PI / 2;
+  chain.position.y = WALL_H - 0.35;
 
-  const cup = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.055, 0.065, 0.10, 12),
-    new THREE.MeshStandardMaterial({ color: 0x3a2a12, roughness: 0.85, metalness: 0.2 })
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.10, 0.14, 0.22, 16),
+    new THREE.MeshStandardMaterial({ color: 0x3b2a12, roughness: 0.65, metalness: 0.35 })
   );
-  cup.position.set(0.17, 1.6, 0);
+  body.position.y = WALL_H - 0.85;
 
-  const flame = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 10, 10),
-    new THREE.MeshStandardMaterial({ color: 0xffcc88, emissive: 0xffaa55, emissiveIntensity: 0.8 })
+  const glass = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 16, 16),
+    new THREE.MeshStandardMaterial({ color: 0xffd7a8, roughness: 0.2, metalness: 0.0, emissive: 0xffaa55, emissiveIntensity: 0.6 })
   );
-  flame.position.set(0.20, 1.66, 0);
+  glass.position.y = WALL_H - 0.93;
 
-  sconce.add(base, cup, flame);
+  lamp.add(chain, body, glass);
 
-  // Place sconce slightly to the right of plaque
-  const torchOffsetSide = 0.42;
-  const torchOffsetOut = 0.48;
+  // place lamp near the plaque, slightly “in corridor”
+  const lampSide = 0.55 * TILE;
+  const lampOut = 0.35 * TILE;
 
-  let tx = x, tz = z, tRotY = 0;
+  let lx = x, lz = z;
+  if (face === "N") { lx += lampSide; lz -= lampOut; }
+  if (face === "S") { lx -= lampSide; lz += lampOut; }
+  if (face === "E") { lx += lampOut; lz += lampSide; }
+  if (face === "W") { lx -= lampOut; lz -= lampSide; }
 
-  if (face === "N") { tx += torchOffsetSide; tz -= torchOffsetOut; tRotY = 0; }
-  if (face === "S") { tx -= torchOffsetSide; tz += torchOffsetOut; tRotY = Math.PI; }
-  if (face === "E") { tx += torchOffsetOut; tz += torchOffsetSide; tRotY = -Math.PI / 2; }
-  if (face === "W") { tx -= torchOffsetOut; tz -= torchOffsetSide; tRotY =  Math.PI / 2; }
+  lamp.position.set(lx, 0, lz);
+  scene.add(lamp);
 
-  sconce.position.set(tx, 0, tz);
-  sconce.rotation.y = tRotY;
-  scene.add(sconce);
+  const light = new THREE.PointLight(0xffaa55, 2.4, 20);
+  light.position.set(lx, WALL_H - 0.95, lz);
+  scene.add(light);
 
-  // Warm light near flame
-  const torchLight = new THREE.PointLight(0xffaa55, 2.2, 12);
-  torchLight.position.set(tx, 2.0, tz);
-  scene.add(torchLight);
-
-  return { plaque, torchLight, flame };
+  return { light, glass };
 }
 
-// ---------- Place a few poem plaques ----------
-const torches = [];
+// ---------- Place framed poems (choose wall-adjacent cells) ----------
+const lamps = [];
 
-// These are short original “in the style of” lines? No — you asked for actual Persian poetry.
-// But we must avoid quoting long copyrighted text. So we’ll use very short, public-domain-safe snippets.
-// Saadi / Hafez / Rumi are public domain; still keep each quote short.
-torches.push(
-  addPlaqueWithTorch(
-    { x: 2.5, z: 1.5, face: "S" },
-    ["بنی‌آدم اعضای یک پیکرند", "که در آفرینش ز یک گوهرند"],
-    "سعدی"
-  )
-);
-
-torches.push(
-  addPlaqueWithTorch(
-    { x: 6.5, z: 1.5, face: "S" },
-    ["در ازل پرتو حسنت ز تجلّی دم زد", "عشق پیدا شد و آتش به همه عالم زد"],
-    "حافظ"
-  )
-);
-
-torches.push(
-  addPlaqueWithTorch(
-    { x: 6.5, z: 3.5, face: "W" },
-    ["هر کسی کو دور ماند از اصل خویش", "باز جوید روزگار وصل خویش"],
-    "مولوی"
-  )
-);
-
-torches.push(
-  addPlaqueWithTorch(
-    { x: 1.5, z: 5.5, face: "E" },
-    ["تو نیکی می‌کن و در دجله انداز", "که ایزد در بیابانت دهد باز"],
-    "سعدی"
-  )
-);
-
-torches.push(
-  addPlaqueWithTorch(
-    { x: 4.5, z: 6.5, face: "N" },
-    ["میان عاشق و معشوق هیچ حائل نیست", "تو خود حجاب خودی، حافظ از میان برخیز"],
-    "حافظ"
-  )
-);
-
-torches.push(
-  addPlaqueWithTorch(
-    { x: 2.5, z: 3.5, face: "E" },
-    ["این نیز بگذرد"],
-    "نقل مشهور"
-  )
-);
+// Short public-domain-safe snippets (keep each quote short)
+lamps.push(addFramedPoem({ cellX: 2, cellZ: 1, face: "S" }, ["بنی‌آدم اعضای یک پیکرند", "که در آفرینش ز یک گوهرند"], "سعدی"));
+lamps.push(addFramedPoem({ cellX: 6, cellZ: 1, face: "S" }, ["در ازل پرتو حسنت ز تجلّی دم زد", "عشق پیدا شد و آتش به همه عالم زد"], "حافظ"));
+lamps.push(addFramedPoem({ cellX: 6, cellZ: 3, face: "W" }, ["هر کسی کو دور ماند از اصل خویش", "باز جوید روزگار وصل خویش"], "مولوی"));
+lamps.push(addFramedPoem({ cellX: 1, cellZ: 5, face: "E" }, ["تو نیکی می‌کن و در دجله انداز"], "سعدی"));
+lamps.push(addFramedPoem({ cellX: 4, cellZ: 6, face: "N" }, ["میان عاشق و معشوق هیچ حائل نیست"], "حافظ"));
 
 // ---------- Movement ----------
-const moveSpeed = 0.10;
+const moveSpeed = 0.13; // a bit faster because tiles are bigger
 const turnSpeed = 0.045;
 
 function update() {
   if (keys["ArrowLeft"]) yaw += turnSpeed;
   if (keys["ArrowRight"]) yaw -= turnSpeed;
-
   camera.rotation.set(0, yaw, 0);
 
   let step = 0;
@@ -373,10 +487,9 @@ function update() {
     }
   }
 
-  // player torch follows
   playerTorch.position.set(camera.position.x, 2.7, camera.position.z);
 
-  setHUD("حرکت با کلیدهای جهت‌دار ↑↓←→  |  در کنار مشعل‌ها، لوح‌های شعر را بخوان.");
+  setHUD("کلیدهای جهت‌دار ↑↓←→  |  لوح‌های خطِ نستعلیق را کنار چراغ‌ها ببین.");
 }
 
 // ---------- Resize ----------
@@ -390,12 +503,12 @@ window.addEventListener("resize", () => {
 function animate() {
   requestAnimationFrame(animate);
 
-  // torch flicker
+  // lamp flicker
   const t = performance.now() * 0.01;
-  for (let i = 0; i < torches.length; i++) {
-    const flicker = 0.18 * Math.sin(t + i * 1.7) + 0.10 * Math.sin(t * 1.9 + i);
-    torches[i].torchLight.intensity = 2.1 + flicker;
-    torches[i].flame.material.emissiveIntensity = 0.75 + flicker * 0.25;
+  for (let i = 0; i < lamps.length; i++) {
+    const flicker = 0.22 * Math.sin(t + i * 1.4) + 0.10 * Math.sin(t * 1.9 + i);
+    lamps[i].light.intensity = 2.35 + flicker;
+    lamps[i].glass.material.emissiveIntensity = 0.55 + flicker * 0.18;
   }
 
   update();
